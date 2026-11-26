@@ -1,0 +1,16 @@
+# Android / Gradle
+*.iml
+.gradle/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild
+.cxx
+
+# Binary assets are materialized by scripts (this repository is text-only):
+#   scripts/fetch-fonts.sh      -> app/src/main/res/font/*.ttf
+#   scripts/restore-wrapper.sh  -> gradle/wrapper/gradle-wrapper.jar
+app/src/main/res/font/*.ttf
+gradle/wrapper/gradle-wrapper.jar
