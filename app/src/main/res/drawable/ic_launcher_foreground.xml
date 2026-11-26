@@ -1,0 +1,12 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- shield: monochrome surface on ink background (Swiss Industrial) -->
+    <path android:fillColor="#F2F2EF"
+        android:pathData="M54,26 L74,33 L74,52 C74,65 65,73 54,80 C43,73 34,65 34,52 L34,33 Z" />
+    <!-- keyhole -->
+    <path android:fillColor="#171717"
+        android:pathData="M54,42 A6,6 0 1,1 53.99,42 Z M51.5,50 L56.5,50 L58,63 L50,63 Z" />
+    <!-- red accent bar: the restrained signature accent -->
+    <path android:fillColor="#D52B1E"
+        android:pathData="M51,57 L57,57 L57,60 L51,60 Z" />
+</vector>
