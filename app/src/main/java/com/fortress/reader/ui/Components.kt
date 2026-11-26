@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -496,7 +497,7 @@ fun FRNavBar(selected: NavTab, onSelect: (NavTab) -> Unit, modifier: Modifier = 
 }
 
 @Composable
-private fun NavItem(tab: NavTab, label: String, selected: Boolean, onSelect: () -> Unit) {
+private fun RowScope.NavItem(tab: NavTab, label: String, selected: Boolean, onSelect: () -> Unit) {
     Column(
         Modifier
             .weight(1f)
@@ -539,7 +540,7 @@ fun frTextFieldColors() = OutlinedTextFieldDefaults.colors(
 // ------------------------------------------------------------------
 
 @Composable
-fun RowActionButton(text: String, color: Color, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun RowActionButton(text: String, color: Color, modifier: Modifier = Modifier, onClick: () -> Unit) {
     TextButton(
         onClick = onClick,
         modifier = modifier,
