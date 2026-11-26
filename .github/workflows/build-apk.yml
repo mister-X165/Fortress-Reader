@@ -26,6 +26,9 @@ jobs:
       - name: Fetch fonts (SHA-256 verified)
         run: sh scripts/fetch-fonts.sh
 
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
       - name: Build release APK
         run: ./gradlew :app:assembleRelease --stacktrace
 
