@@ -2,9 +2,12 @@ package com.fortress.reader.vault
 
 import android.content.ContentUris
 import android.content.Context
+import android.content.Intent
+import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,25 +17,78 @@ import kotlinx.coroutines.withContext
 /**
  * Level 1 – ordinary library synchronized with device files (ReadEra-style).
  *
- * Scans MediaStore for supported document MIME types / extensions.
- * Entries are only metadata + content URIs; files stay on the device filesystem.
- * Opening a library item uses the temporary-view path (decrypt is not involved).
+ * Two complementary discovery sources:
+ * 1. MediaStore query for indexed PDF / DOCX / FB2 (works best on Android ≤12).
+ * 2. User-granted directory trees via Storage Access Framework (OpenDocumentTree).
+ *    Permissions are persisted; trees are scanned recursively. Primary path on Android 13+.
  */
 data class LibraryItem(
-    val id: String,          // content URI string
+    val id: String,
     val uri: Uri,
     val name: String,
     val sizeBytes: Long,
     val mimeType: String,
     val modifiedAt: Long,
-)
+    val source: Source = Source.MEDIA_STORE,
+) {
+    enum class Source { MEDIA_STORE, SAF_TREE }
+}
 
 class LibraryRepository(private val context: Context) {
+    private val prefs: SharedPreferences =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
     private val _items = MutableStateFlow<List<LibraryItem>>(emptyList())
     val items: Flow<List<LibraryItem>> = _items.asStateFlow()
 
-    /** Rescan MediaStore for PDF / DOCX / FB2 (and common ebook types). */
+    private val _treeUris = MutableStateFlow<List<Uri>>(loadPersistedTrees())
+    val treeUris: Flow<List<Uri>> = _treeUris.asStateFlow()
+
+    private val supportedExt = listOf(".pdf", ".docx", ".fb2", ".fb2.zip")
+
+    suspend fun addTree(uri: Uri) = withContext(Dispatchers.IO) {
+        try {
+            val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            context.contentResolver.takePersistableUriPermission(uri, flags)
+        } catch (_: SecurityException) {
+        }
+        val current = loadPersistedTrees().toMutableList()
+        if (current.none { it.toString() == uri.toString() }) {
+            current.add(uri)
+            savePersistedTrees(current)
+            _treeUris.value = current
+        }
+        refresh()
+    }
+
+    suspend fun removeTree(uri: Uri) = withContext(Dispatchers.IO) {
+        try {
+            context.contentResolver.releasePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        } catch (_: SecurityException) { }
+        val current = loadPersistedTrees().filter { it.toString() != uri.toString() }
+        savePersistedTrees(current)
+        _treeUris.value = current
+        refresh()
+    }
+
     suspend fun refresh() = withContext(Dispatchers.IO) {
+        val seen = LinkedHashMap<String, LibraryItem>()
+        scanMediaStore().forEach { seen[it.id] = it }
+        for (tree in loadPersistedTrees()) {
+            try {
+                scanTree(tree).forEach { item -> seen[item.id] = item }
+            } catch (_: SecurityException) {
+                removeTreeInternal(tree)
+            } catch (_: Exception) { }
+        }
+        _items.value = seen.values.sortedByDescending { it.modifiedAt }.toList()
+    }
+
+    private fun scanMediaStore(): List<LibraryItem> {
         val result = mutableListOf<LibraryItem>()
         val projection = arrayOf(
             MediaStore.Files.FileColumns._ID,
@@ -41,7 +97,6 @@ class LibraryRepository(private val context: Context) {
             MediaStore.Files.FileColumns.MIME_TYPE,
             MediaStore.Files.FileColumns.DATE_MODIFIED,
         )
-        // Documents collection is the right place for non-media files on modern Android.
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL)
         } else {
@@ -52,30 +107,23 @@ class LibraryRepository(private val context: Context) {
             append("${MediaStore.Files.FileColumns.MIME_TYPE} = ? OR ")
             append("${MediaStore.Files.FileColumns.MIME_TYPE} = ? OR ")
             append("${MediaStore.Files.FileColumns.MIME_TYPE} = ? OR ")
+            append("${MediaStore.Files.FileColumns.MIME_TYPE} = ? OR ")
+            append("${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ? OR ")
             append("${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ? OR ")
             append("${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ? OR ")
             append("${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?")
             append(")")
         }
-        // Exactly one bind argument per '?' placeholder — a mismatch throws SQLiteException
-        // and the scan would silently return an empty library.
         val args = arrayOf(
             "application/pdf",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "application/x-fictionbook+xml",
-            "%.pdf",
-            "%.docx",
-            "%.fb2",
+            "application/fb2",
+            "%.pdf", "%.docx", "%.fb2", "%.fb2.zip",
         )
-        // Note: only formats the renderer actually supports (PDF / DOCX / FB2).
-        // EPUB and legacy .doc are deliberately not listed: they would appear
-        // in the library and then fail to open.
         try {
             context.contentResolver.query(
-                collection,
-                projection,
-                selection,
-                args,
+                collection, projection, selection, args,
                 "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC",
             )?.use { c ->
                 val idCol = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
@@ -86,18 +134,96 @@ class LibraryRepository(private val context: Context) {
                 while (c.moveToNext()) {
                     val id = c.getLong(idCol)
                     val name = c.getString(nameCol) ?: continue
+                    if (!isSupportedName(name)) continue
                     val size = if (c.isNull(sizeCol)) 0L else c.getLong(sizeCol)
-                    val mime = c.getString(mimeCol) ?: "application/octet-stream"
+                    val mime = c.getString(mimeCol) ?: guessMime(name)
                     val mod = if (c.isNull(modCol)) 0L else c.getLong(modCol) * 1000
                     val uri = ContentUris.withAppendedId(collection, id)
-                    result.add(LibraryItem(uri.toString(), uri, name, size, mime, mod))
+                    result.add(
+                        LibraryItem(
+                            id = uri.toString(), uri = uri, name = name,
+                            sizeBytes = size, mimeType = mime, modifiedAt = mod,
+                            source = LibraryItem.Source.MEDIA_STORE,
+                        ),
+                    )
                 }
             }
         } catch (_: SecurityException) {
-            // Permission not granted yet — leave empty; UI will prompt.
         } catch (_: Exception) {
-            // Best-effort scan; never crash the library.
         }
-        _items.value = result
+        return result
+    }
+
+    private fun scanTree(treeUri: Uri): List<LibraryItem> {
+        val root = DocumentFile.fromTreeUri(context, treeUri) ?: return emptyList()
+        if (!root.canRead()) return emptyList()
+        val out = mutableListOf<LibraryItem>()
+        walk(root, out, 0)
+        return out
+    }
+
+    private fun walk(dir: DocumentFile, out: MutableList<LibraryItem>, depth: Int) {
+        if (depth > MAX_TREE_DEPTH || out.size >= MAX_TREE_ITEMS) return
+        val children = try { dir.listFiles() } catch (_: Exception) { return }
+        for (child in children) {
+            if (out.size >= MAX_TREE_ITEMS) return
+            when {
+                child.isDirectory -> walk(child, out, depth + 1)
+                child.isFile -> {
+                    val name = child.name ?: continue
+                    if (!isSupportedName(name)) continue
+                    out.add(
+                        LibraryItem(
+                            id = child.uri.toString(),
+                            uri = child.uri,
+                            name = name,
+                            sizeBytes = child.length().coerceAtLeast(0L),
+                            mimeType = child.type ?: guessMime(name),
+                            modifiedAt = child.lastModified().coerceAtLeast(0L),
+                            source = LibraryItem.Source.SAF_TREE,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun loadPersistedTrees(): List<Uri> {
+        val raw = prefs.getStringSet(KEY_TREES, emptySet()) ?: emptySet()
+        return raw.mapNotNull { runCatching { Uri.parse(it) }.getOrNull() }
+    }
+
+    private fun savePersistedTrees(uris: List<Uri>) {
+        prefs.edit().putStringSet(KEY_TREES, uris.map { it.toString() }.toSet()).apply()
+    }
+
+    private fun removeTreeInternal(uri: Uri) {
+        val current = loadPersistedTrees().filter { it.toString() != uri.toString() }
+        savePersistedTrees(current)
+        _treeUris.value = current
+    }
+
+    private fun isSupportedName(name: String): Boolean {
+        val lower = name.lowercase()
+        return supportedExt.any { lower.endsWith(it) }
+    }
+
+    private fun guessMime(name: String): String {
+        val lower = name.lowercase()
+        return when {
+            lower.endsWith(".pdf") -> "application/pdf"
+            lower.endsWith(".docx") ->
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            lower.endsWith(".fb2") || lower.endsWith(".fb2.zip") ->
+                "application/x-fictionbook+xml"
+            else -> "application/octet-stream"
+        }
+    }
+
+    companion object {
+        private const val PREFS_NAME = "library_trees"
+        private const val KEY_TREES = "tree_uris"
+        private const val MAX_TREE_DEPTH = 12
+        private const val MAX_TREE_ITEMS = 5_000
     }
 }
