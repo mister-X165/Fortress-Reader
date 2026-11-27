@@ -47,12 +47,32 @@ class LibraryRepository(private val context: Context) {
     private val supportedExt = listOf(".pdf", ".docx", ".fb2", ".fb2.zip")
 
     suspend fun addTree(uri: Uri) = withContext(Dispatchers.IO) {
-        try {
-            val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
-            context.contentResolver.takePersistableUriPermission(uri, flags)
-        } catch (_: SecurityException) {
+        // Persistable permission may throw SecurityException / IllegalArgumentException on
+        // some OEMs; try several flag combinations and still keep the URI for this session.
+        val read = Intent.FLAG_GRANT_READ_URI_PERMISSION
+        val write = Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        val candidates = intArrayOf(
+            read or write,
+            read,
+        )
+        for (flags in candidates) {
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, flags)
+                break
+            } catch (_: SecurityException) {
+            } catch (_: IllegalArgumentException) {
+            } catch (_: Exception) {
+            }
         }
+
+        val root = DocumentFile.fromTreeUri(context, uri)
+        if (root == null || !root.canRead()) {
+            throw IllegalStateException(
+                "Cannot read this folder. Pick a regular folder (e.g. Documents/Books), " +
+                    "not Downloads. On the system screen tap “Use this folder”.",
+            )
+        }
+
         val current = loadPersistedTrees().toMutableList()
         if (current.none { it.toString() == uri.toString() }) {
             current.add(uri)
