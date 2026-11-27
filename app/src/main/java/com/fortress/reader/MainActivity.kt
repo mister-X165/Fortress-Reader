@@ -37,9 +37,22 @@ class MainActivity : FragmentActivity() {
         pickerOpen = false; it?.let { uri -> vm.prepareImport(uri, ImportTarget.TEMPORARY_VIEW) }
     }
 
-    private val treePicker = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) {
+    private val treePicker = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         pickerOpen = false
-        it?.let { uri -> vm.addLibraryFolder(uri) }
+        if (uri == null) return@registerForActivityResult
+        // Must run immediately on the Activity result path (OEM-sensitive).
+        val read = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+        val write = android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        for (flags in intArrayOf(read or write, read)) {
+            try {
+                contentResolver.takePersistableUriPermission(uri, flags)
+                break
+            } catch (_: SecurityException) {
+            } catch (_: IllegalArgumentException) {
+            } catch (_: Exception) {
+            }
+        }
+        vm.addLibraryFolder(uri)
     }
 
     private val permissionLauncher = registerForActivityResult(
