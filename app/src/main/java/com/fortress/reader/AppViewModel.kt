@@ -175,7 +175,8 @@ class AppViewModel @Inject constructor(
                 library.addTree(uri)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
-                _message.value = e.userMessage("Could not add the folder.")
+                val detail = e.message?.takeIf { it.isNotBlank() }
+                _message.value = detail ?: e.userMessage("Could not add the folder.")
             }
         }
     }
@@ -266,7 +267,7 @@ class AppViewModel @Inject constructor(
             _busy.value = BusyState("Encrypting into vault", null)
             try {
                 photos.importPhoto(uri) { done, total -> reportProgress("Encrypting into vault", done, total) }
-                _message.value = "Imported to vault. Encryption complete."
+                _message.value = e.userMessage("Could not import this photo.")
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 _message.value = e.userMessage("Could not import this photo.")
@@ -348,7 +349,7 @@ class AppViewModel @Inject constructor(
     }
 
     fun openFromVault(id: String) = open("Decrypting document") { repo.decryptToTemp(id) }
-    fun deleteDocument(id: String) { viewModelScope.launch { repo.delete(id) } }
+    fun deleteDocument(id: String) { viewModelScope.launch { repo.delete(id) }
 
     fun openPhoto(id: String) {
         generation++
