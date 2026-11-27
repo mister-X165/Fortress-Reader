@@ -32,7 +32,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Top-level navigation after the app (biometric) lock is cleared. */
 sealed interface Screen {
     data object Library : Screen
     data object SafeLocked : Screen
@@ -445,7 +444,7 @@ class AppViewModel @Inject constructor(
         if (id != null) viewModelScope.launch { notes.delete(id) }
     }
 
-    fun deleteNote(id: String) { viewModelScope.launch { notes.delete(id) }
+    fun deleteNote(id: String) { viewModelScope.launch { notes.delete(id) } }
 
     private fun persist(d: NoteDraft) {
         if (!d.dirty || (d.id == null && d.title.isBlank() && d.body.isBlank())) return
