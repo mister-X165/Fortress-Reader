@@ -12,6 +12,7 @@ dependencies {
     api(project(":security"))
     implementation(project(":document"))
     implementation(libs.coroutines.android)
+    implementation(libs.androidx.documentfile)
     api(libs.room.runtime)
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
