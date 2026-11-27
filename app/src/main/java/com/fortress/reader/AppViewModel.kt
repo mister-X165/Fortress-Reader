@@ -35,11 +35,11 @@ import kotlinx.coroutines.withContext
 /** Top-level navigation after the app (biometric) lock is cleared. */
 sealed interface Screen {
     data object Library : Screen
-    data object SafeLocked : Screen          // PIN entry for the digital safe
-    data object SafeSetup : Screen           // first-time PIN + duress setup
-    data object SafeHome : Screen            // documents / photos / notes inside the safe
+    data object SafeLocked : Screen
+    data object SafeSetup : Screen
+    data object SafeHome : Screen
     data object SafeSettings : Screen
-    data object SecurityDashboard : Screen   // verified device states
+    data object SecurityDashboard : Screen
     data object Loading : Screen
     data object NoteEditor : Screen
     class Viewer(val title: String, val document: OpenedDocument) : Screen
@@ -48,10 +48,7 @@ sealed interface Screen {
     data class ImportConfirm(val pending: PendingImport) : Screen
 }
 
-/** Where the picked file came from / is going. */
 enum class ImportTarget { VAULT_DOCUMENT, VAULT_PHOTO, TEMPORARY_VIEW }
-
-/** Storage mode selected on the Import Document screen. */
 enum class ImportMode { TO_VAULT, TEMPORARY }
 
 data class PendingImport(
@@ -64,7 +61,6 @@ data class PendingImport(
 )
 
 data class BusyState(val title: String, val progress: Float?)
-
 data class NoteDraft(val id: String?, val title: String, val body: String, val dirty: Boolean = false)
 
 @HiltViewModel
@@ -79,15 +75,13 @@ class AppViewModel @Inject constructor(
     private val securityStatus: SecurityStatusProvider,
 ) : ViewModel() {
 
-    // ---- Level 1: ordinary library (synced with phone files) ----
     val libraryItems = library.items.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val libraryFolders = library.treeUris.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    // ---- Level 2: digital safe ----
     val documents = repo.documents().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val noteList = notes.notes().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val photoList = photos.photos().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    /** Plaintext-equivalent payload tracked by the vault (documents + photos). */
     val vaultUsageBytes: StateFlow<Long> =
         combine(documents, photoList) { d, p -> d.sumOf { it.sizeBytes } + p.sumOf { it.sizeBytes } }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
@@ -95,10 +89,10 @@ class AppViewModel @Inject constructor(
     private val _screen = MutableStateFlow<Screen>(Screen.Library)
     val screen: StateFlow<Screen> = _screen.asStateFlow()
 
-    private val _locked = MutableStateFlow(true)          // app-level (biometric) lock
+    private val _locked = MutableStateFlow(true)
     val locked: StateFlow<Boolean> = _locked.asStateFlow()
 
-    private val _safeUnlocked = MutableStateFlow(false)   // session unlock of the safe
+    private val _safeUnlocked = MutableStateFlow(false)
     val safeUnlocked: StateFlow<Boolean> = _safeUnlocked.asStateFlow()
 
     private val _safeSetupDone = MutableStateFlow(false)
@@ -138,11 +132,8 @@ class AppViewModel @Inject constructor(
     fun unlock() { _locked.value = false }
     fun dismissMessage() { _message.value = null }
     fun dismissPinError() { _pinError.value = null }
-
-    /** Called once by the Activity after FLAG_SECURE is applied to the window. */
     fun markScreenProtectionActive() { _screenProtected.value = true }
 
-    /** Saves drafts, closes open files, locks both app and safe. */
     fun lock() {
         generation++
         _draft.value?.let(::persist)
@@ -153,16 +144,12 @@ class AppViewModel @Inject constructor(
         _locked.value = true
     }
 
-    // ------------------------------------------------------------------
-    // Bottom navigation
-    // ------------------------------------------------------------------
     fun goLibrary() {
         _safeUnlocked.value = false
         _screen.value = Screen.Library
     }
 
     fun goVault() = enterSafe()
-
     fun goSecurity() = openDashboard()
 
     private fun openDashboard() {
@@ -179,21 +166,36 @@ class AppViewModel @Inject constructor(
         }
     }
 
-    // ------------------------------------------------------------------
-    // Level 1 – Library (phone files)
-    // ------------------------------------------------------------------
     fun refreshLibrary() {
         viewModelScope.launch { library.refresh() }
     }
 
-    /** Library browsing opens items directly as a temporary view. */
+    fun addLibraryFolder(uri: android.net.Uri) {
+        viewModelScope.launch {
+            try {
+                library.addTree(uri)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                _message.value = e.userMessage("Could not add the folder.")
+            }
+        }
+    }
+
+    fun removeLibraryFolder(uri: android.net.Uri) {
+        viewModelScope.launch {
+            try {
+                library.removeTree(uri)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                _message.value = e.userMessage("Could not remove the folder.")
+            }
+        }
+    }
+
     fun openLibraryItem(item: LibraryItem) = open("Opening document") {
         repo.copyToTemp(item.uri) { done, total -> reportProgress("Opening document", done, total) }
     }
 
-    // ------------------------------------------------------------------
-    // Import flow: inspect -> confirm -> execute
-    // ------------------------------------------------------------------
     fun prepareImport(uri: Uri, target: ImportTarget) {
         viewModelScope.launch {
             try {
@@ -201,17 +203,9 @@ class AppViewModel @Inject constructor(
                     ImportTarget.VAULT_DOCUMENT, ImportTarget.TEMPORARY_VIEW -> repo.inspectDocument(uri)
                     ImportTarget.VAULT_PHOTO -> photos.inspectPhoto(uri)
                 }
-                val cap = if (target == ImportTarget.VAULT_PHOTO) {
-                    PhotoRepository.MAX_BYTES
-                } else {
-                    VaultRepository.MAX_BYTES
-                }
+                val cap = if (target == ImportTarget.VAULT_PHOTO) PhotoRepository.MAX_BYTES else VaultRepository.MAX_BYTES
                 if (info.sizeBytes > cap) {
-                    _message.value = if (target == ImportTarget.VAULT_PHOTO) {
-                        "The file is larger than 50 MB"
-                    } else {
-                        "The file is larger than 100 MB"
-                    }
+                    _message.value = if (target == ImportTarget.VAULT_PHOTO) "The file is larger than 50 MB" else "The file is larger than 100 MB"
                     return@launch
                 }
                 if (info.formatLabel == "UNSUPPORTED") {
@@ -240,15 +234,9 @@ class AppViewModel @Inject constructor(
                 repo.copyToTemp(pending.uri) { done, total -> reportProgress("Opening document", done, total) }
             }
         } else {
-            // Vault targets always import; documents picked for temporary viewing may still be imported.
-            // Return to the context the user came from; the success message is shown only
-            // after encryption has actually completed.
             _screen.value = if (_safeUnlocked.value) Screen.SafeHome else Screen.Library
-            if (pending.target == ImportTarget.VAULT_PHOTO) {
-                importPhotoInternal(pending.uri)
-            } else {
-                importDocInternal(pending.uri)
-            }
+            if (pending.target == ImportTarget.VAULT_PHOTO) importPhotoInternal(pending.uri)
+            else importDocInternal(pending.uri)
         }
     }
 
@@ -270,9 +258,7 @@ class AppViewModel @Inject constructor(
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 _message.value = e.userMessage("Could not import this file.")
-            } finally {
-                _busy.value = null
-            }
+            } finally { _busy.value = null }
         }
     }
 
@@ -285,29 +271,19 @@ class AppViewModel @Inject constructor(
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 _message.value = e.userMessage("Could not import this photo.")
-            } finally {
-                _busy.value = null
-            }
+            } finally { _busy.value = null }
         }
     }
 
-    // ------------------------------------------------------------------
-    // Level 2 – Digital safe
-    // ------------------------------------------------------------------
     fun enterSafe() {
         viewModelScope.launch {
-            if (!safeAuth.isSetup()) {
-                _screen.value = Screen.SafeSetup
-            } else if (_safeUnlocked.value) {
-                _screen.value = Screen.SafeHome
-            } else {
-                _screen.value = Screen.SafeLocked
-            }
+            if (!safeAuth.isSetup()) _screen.value = Screen.SafeSetup
+            else if (_safeUnlocked.value) _screen.value = Screen.SafeHome
+            else _screen.value = Screen.SafeLocked
         }
     }
 
     fun leaveSafe() {
-        // Re-lock the safe when leaving; documents stay encrypted at rest.
         _safeUnlocked.value = false
         _screen.value = Screen.Library
     }
@@ -331,7 +307,6 @@ class AppViewModel @Inject constructor(
             try {
                 when (val result = safeAuth.unlock(pin)) {
                     UnlockResult.Real, UnlockResult.Duress -> {
-                        // Duress already wiped data; UI looks identical (empty safe).
                         _safeUnlocked.value = true
                         _pinError.value = null
                         _screen.value = Screen.SafeHome
@@ -339,9 +314,7 @@ class AppViewModel @Inject constructor(
                     is UnlockResult.Locked -> {
                         _pinError.value = "Too many failed attempts. Locked for ${formatRemaining(result.remainingMs)}."
                     }
-                    UnlockResult.Failed -> {
-                        _pinError.value = "Incorrect PIN"
-                    }
+                    UnlockResult.Failed -> { _pinError.value = "Incorrect PIN" }
                 }
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
@@ -375,11 +348,9 @@ class AppViewModel @Inject constructor(
         }
     }
 
-    // documents in safe
     fun openFromVault(id: String) = open("Decrypting document") { repo.decryptToTemp(id) }
     fun deleteDocument(id: String) { viewModelScope.launch { repo.delete(id) } }
 
-    // photos in safe
     fun openPhoto(id: String) {
         generation++
         val mine = generation
@@ -398,9 +369,7 @@ class AppViewModel @Inject constructor(
                 if (e is CancellationException) throw e
                 file?.let(temp::wipe)
                 if (mine == generation) _screen.value = Screen.Failure(e.userMessage("This photo could not be opened."))
-            } finally {
-                _busy.value = null
-            }
+            } finally { _busy.value = null }
         }
     }
 
@@ -409,7 +378,6 @@ class AppViewModel @Inject constructor(
     fun closeDocument() {
         generation++
         releaseDocument()
-        // return to whichever area we came from
         _screen.value = if (_safeUnlocked.value) Screen.SafeHome else Screen.Library
     }
 
@@ -435,9 +403,7 @@ class AppViewModel @Inject constructor(
                 if (e is CancellationException) throw e
                 runCatching { doc?.close() }; file?.let(temp::wipe)
                 if (mine == generation) _screen.value = Screen.Failure(e.userMessage("This document could not be opened."))
-            } finally {
-                _busy.value = null
-            }
+            } finally { _busy.value = null }
         }
     }
 
@@ -446,7 +412,6 @@ class AppViewModel @Inject constructor(
         openFile?.let(temp::wipe); openFile = null
     }
 
-    // notes
     fun newNote() { _draft.value = NoteDraft(null, "", ""); _screen.value = Screen.NoteEditor }
 
     fun openNote(id: String) {
@@ -480,13 +445,12 @@ class AppViewModel @Inject constructor(
         if (id != null) viewModelScope.launch { notes.delete(id) }
     }
 
-    fun deleteNote(id: String) { viewModelScope.launch { notes.delete(id) } }
+    fun deleteNote(id: String) { viewModelScope.launch { notes.delete(id) }
 
     private fun persist(d: NoteDraft) {
         if (!d.dirty || (d.id == null && d.title.isBlank() && d.body.isBlank())) return
         viewModelScope.launch {
             try {
-                // The save must complete even when the scope is cancelled by locking.
                 withContext(NonCancellable) { notes.save(d.id, d.title, d.body) }
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
