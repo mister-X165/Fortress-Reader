@@ -21,10 +21,9 @@ import dagger.hilt.android.AndroidEntryPoint
 @AndroidEntryPoint
 class MainActivity : FragmentActivity() {
     private val vm: AppViewModel by viewModels()
-    private var pickerOpen = false // system file picker backgrounds us; don't lock for it
+    private var pickerOpen = false
     private var authenticating = false
 
-    // "*/*": providers report FB2/DOCX with inconsistent MIME types; the real format is detected from content.
     private val anyFile = arrayOf("*/*")
     private val imageTypes = arrayOf("image/*")
 
@@ -38,6 +37,11 @@ class MainActivity : FragmentActivity() {
         pickerOpen = false; it?.let { uri -> vm.prepareImport(uri, ImportTarget.TEMPORARY_VIEW) }
     }
 
+    private val treePicker = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) {
+        pickerOpen = false
+        it?.let { uri -> vm.addLibraryFolder(uri) }
+    }
+
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { granted ->
@@ -46,7 +50,6 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // No screenshots, screen recording or recents thumbnails.
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         vm.markScreenProtectionActive()
         requestLibraryPermissions()
@@ -54,9 +57,22 @@ class MainActivity : FragmentActivity() {
             FortressRoot(
                 vm = vm,
                 onUnlock = ::authenticate,
-                onImportDoc = { pickerOpen = true; importDocPicker.launch(anyFile) },
-                onImportPhoto = { pickerOpen = true; importPhotoPicker.launch(imageTypes) },
-                onOpenTemporary = { pickerOpen = true; tempPicker.launch(anyFile) },
+                onImportDoc = {
+                    pickerOpen = true
+                    importDocPicker.launch(anyFile)
+                },
+                onImportPhoto = {
+                    pickerOpen = true
+                    importPhotoPicker.launch(imageTypes)
+                },
+                onOpenTemporary = {
+                    pickerOpen = true
+                    tempPicker.launch(anyFile)
+                },
+                onAddFolder = {
+                    pickerOpen = true
+                    treePicker.launch(null)
+                },
             )
         }
     }
@@ -67,8 +83,6 @@ class MainActivity : FragmentActivity() {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES)
                 != PackageManager.PERMISSION_GRANTED
             ) needed += Manifest.permission.READ_MEDIA_IMAGES
-            // Documents are typically accessible via MediaStore without extra permission on API 33+,
-            // but READ_MEDIA_VISUAL_USER_SELECTED / legacy storage may still help some devices.
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
                 != PackageManager.PERMISSION_GRANTED
@@ -90,7 +104,7 @@ class MainActivity : FragmentActivity() {
 
     private fun authenticate() {
         if (authenticating) return
-        val authenticators = BIOMETRIC_WEAK or DEVICE_CREDENTIAL // STRONG|CREDENTIAL is unsupported on API 29
+        val authenticators = BIOMETRIC_WEAK or DEVICE_CREDENTIAL
         if (BiometricManager.from(this).canAuthenticate(authenticators) != BiometricManager.BIOMETRIC_SUCCESS) {
             Toast.makeText(
                 this,
