@@ -96,10 +96,12 @@ fun FortressRoot(
     onImportDoc: () -> Unit,
     onImportPhoto: () -> Unit,
     onOpenTemporary: () -> Unit,
+    onAddFolder: () -> Unit,
 ) {
     val locked by vm.locked.collectAsStateWithLifecycle()
     val screen by vm.screen.collectAsStateWithLifecycle()
     val libraryItems by vm.libraryItems.collectAsStateWithLifecycle()
+    val libraryFolders by vm.libraryFolders.collectAsStateWithLifecycle()
     val docs by vm.documents.collectAsStateWithLifecycle()
     val notes by vm.noteList.collectAsStateWithLifecycle()
     val photoList by vm.photoList.collectAsStateWithLifecycle()
@@ -124,10 +126,13 @@ fun FortressRoot(
                         when (current) {
                             Screen.Library -> LibraryScreen(
                                 items = libraryItems,
+                                folders = libraryFolders,
                                 screenProtected = screenProtected,
                                 onRefresh = vm::refreshLibrary,
                                 onOpenItem = vm::openLibraryItem,
                                 onOpenTemporary = onOpenTemporary,
+                                onAddFolder = onAddFolder,
+                                onRemoveFolder = vm::removeLibraryFolder,
                             )
                             is Screen.ImportConfirm -> ImportScreen(
                                 pending = current.pending,
@@ -307,10 +312,13 @@ private fun LockScreen(onUnlock: () -> Unit) =
 @Composable
 private fun LibraryScreen(
     items: List<LibraryItem>,
+    folders: List<android.net.Uri>,
     screenProtected: Boolean,
     onRefresh: () -> Unit,
     onOpenItem: (LibraryItem) -> Unit,
     onOpenTemporary: () -> Unit,
+    onAddFolder: () -> Unit,
+    onRemoveFolder: (android.net.Uri) -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
         BrandHeader(screenProtected)
@@ -328,26 +336,69 @@ private fun LibraryScreen(
             horizontalArrangement = Arrangement.spacedBy(FRSpacing.xs),
         ) {
             FRSecondaryButton("OPEN FILE…", onOpenTemporary, Modifier.weight(1f))
+            FRSecondaryButton("ADD FOLDER…", onAddFolder, Modifier.weight(1f))
             FRSecondaryButton("REFRESH", onRefresh, Modifier.weight(1f))
         }
         Spacer(Modifier.height(FRSpacing.sm))
+
+        if (folders.isNotEmpty()) {
+            Column(Modifier.padding(horizontal = FRSpacing.md)) {
+                Text(
+                    "SCANNED FOLDERS",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(FRSpacing.xxs))
+                folders.forEach { uri ->
+                    val label = uri.lastPathSegment?.substringAfterLast(':') ?: uri.toString()
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = FRSpacing.xxs),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            label,
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                        )
+                        TextButton(onClick = { onRemoveFolder(uri) }) {
+                            Text("REMOVE", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(FRSpacing.sm))
+            }
+        }
+
         if (items.isEmpty()) {
             EmptyState(
                 title = "NO DOCUMENTS FOUND",
-                hint = "Grant storage access and place PDF / DOCX / FB2 files on the device, " +
-                    "or use “Open file…” to pick one. Opening a device file creates a temporary " +
-                    "working copy that is wiped on close; nothing is copied into the vault.",
+                hint = "On Android 13+ the system does not index PDF / DOCX / FB2 in MediaStore. " +
+                    "Tap “ADD FOLDER…” and grant access to Downloads or Documents — the app will " +
+                    "scan those folders (and subfolders) for supported files, just like ReadEra. " +
+                    "You can also use “Open file…” for a one-off pick. Opening a device file creates " +
+                    "a temporary working copy that is wiped on close; nothing is copied into the vault.",
                 modifier = Modifier.weight(1f),
             )
         } else {
-            LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = FRSpacing.md)) {
+            LazyColumn(
+                Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = FRSpacing.md),
+            ) {
                 items(items, key = { it.id }) { item ->
                     DocumentRow(
                         title = item.name,
                         meta = formatSize(item.sizeBytes) + " · " + formatDate(item.modifiedAt),
                         format = libraryFormat(item),
                         onClick = { onOpenItem(item) },
-                        statusTag = "DEVICE FILE",
+                        statusTag = if (item.source == LibraryItem.Source.SAF_TREE) {
+                            "FOLDER"
+                        } else {
+                            "DEVICE FILE"
+                        },
                     )
                 }
                 item { Spacer(Modifier.height(FRSpacing.lg)) }
@@ -355,7 +406,6 @@ private fun LibraryScreen(
         }
     }
 }
-
 // ------------------------------------------------------------------
 // E. Import Document (confirmation before any operation)
 // ------------------------------------------------------------------
